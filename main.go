@@ -3,8 +3,11 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"os"
 	"reflect"
 	"strconv"
@@ -133,29 +136,12 @@ func decode(str interface{}, runes []rune) {
 	}
 }
 
-func main() {
+func parse(handle io.Reader) (bytes []byte, err error) {
 	decoder := charmap.Windows1250.NewDecoder()
-	stat, _ := os.Stdin.Stat()
-	hasStdin := (stat.Mode() & os.ModeCharDevice) == 0
-	hasFile := len(os.Args) >= 2
-
-	if hasFile == hasStdin {
-		fmt.Println("Provide either the filename or stdin input")
-		os.Exit(1)
-	}
-
-	var decoderReader io.Reader
-	if hasFile {
-		f, _ := os.Open(os.Args[1])
-		defer f.Close()
-		decoderReader = decoder.Reader(f)
-	} else {
-		decoderReader = decoder.Reader(os.Stdin)
-	}
-
-	reader := bufio.NewReader(decoderReader)
+	decoderReader := decoder.Reader(handle)
 	linesScanned := 0
 	statement := Statement{_900: &_900{}, _909: &_909{}, Groups: []Group{}}
+	reader := bufio.NewReader(decoderReader)
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -168,8 +154,7 @@ func main() {
 		strType := string(runes[997:])
 
 		if linesScanned == 0 && strType != "900" {
-			fmt.Println(fmt.Sprintf("Invalid line %d with type %s", linesScanned, strType))
-			os.Exit(1)
+			return nil, fmt.Errorf("Invalid line %d with type %s", linesScanned, strType)
 		}
 
 		switch strType {
@@ -198,13 +183,75 @@ func main() {
 		case "999":
 			break
 		default:
-			fmt.Println(fmt.Sprintf("Unsupported type %s", strType))
-			os.Exit(1)
+			return nil, fmt.Errorf("Unsupported type %s on line %d", strType, linesScanned)
 		}
 
 		linesScanned++
 	}
 
-	json, _ := json.Marshal(statement)
+	return json.Marshal(statement)
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, http.StatusText(http.StatusNotAcceptable), http.StatusNotAcceptable)
+		return
+	}
+
+	file, _, err := r.FormFile("statement")
+	defer file.Close()
+
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+
+	bytes, err := parse(file)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(bytes)
+}
+
+func cliMain() {
+	stat, _ := os.Stdin.Stat()
+	hasStdin := (stat.Mode() & os.ModeCharDevice) == 0
+	hasFile := len(os.Args) >= 2
+
+	if hasFile == hasStdin {
+		fmt.Println("Provide either the filename or stdin input")
+		os.Exit(1)
+	}
+
+	var handle io.Reader
+	if hasFile {
+		f, _ := os.Open(os.Args[1])
+		defer f.Close()
+		handle = f
+	} else {
+		handle = os.Stdin
+	}
+
+	json, err := parse(handle)
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+
 	fmt.Println(string(json))
+}
+
+func main() {
+	isServer := flag.Bool("s", false, "Start as HTTP server")
+	flag.Parse()
+
+	if *isServer {
+		addr := ":3001"
+		fmt.Println(fmt.Sprintf("Listening on %s", addr))
+		http.HandleFunc("/", handler)
+		log.Fatal(http.ListenAndServe(addr, nil))
+	} else {
+		cliMain()
+	}
 }
