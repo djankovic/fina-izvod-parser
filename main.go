@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
@@ -22,8 +23,8 @@ type _900 struct {
 	IZ9000OIBBNK  string `decoder:"11"`
 	IZ900VRIZ     string `decoder:"4"`
 	IZ900DATUM    string `decoder:"8"`
-	IZ900REZ2     string `decoder:"917" json:"-"`
-	IZ900TIPSL    string `decoder:"3" json:"-"`
+	IZ900REZ2     string `decoder:"917" json:"-" xml:"-"`
+	IZ900TIPSL    string `decoder:"3" json:"-" xml:"-"`
 }
 
 type _903 struct {
@@ -40,8 +41,8 @@ type _903 struct {
 	IZ903DATUM   string `decoder:"8"`
 	IZ903BRGRU   string `decoder:"4"`
 	IZ903VRIZ    string `decoder:"4"`
-	IZ903REZ     string `decoder:"809" json:"-"`
-	IZ903TIPSL   string `decoder:"3" json:"-"`
+	IZ903REZ     string `decoder:"809" json:"-" xml:"-"`
+	IZ903TIPSL   string `decoder:"3" json:"-" xml:"-"`
 }
 
 type _905 struct {
@@ -64,8 +65,8 @@ type _905 struct {
 	IZ905OPISPL        string `decoder:"140"`
 	IZ905IDTRFINA      string `decoder:"42"`
 	IZ905IDTRBAN       string `decoder:"35"`
-	IZ905REZ2          string `decoder:"482" json:"-"`
-	IZ905TIPSL         string `decoder:"3" json:"-"`
+	IZ905REZ2          string `decoder:"482" json:"-" xml:"-"`
+	IZ905TIPSL         string `decoder:"3" json:"-" xml:"-"`
 }
 
 type _907 struct {
@@ -94,21 +95,21 @@ type _907 struct {
 	IZ907BRGRU    string `decoder:"4"`
 	IZ907BRSTA    string `decoder:"6"`
 	IZ907TEKST    string `decoder:"420"`
-	IZ907REZ2     string `decoder:"317" json:"-"`
-	IZ907TIPSL    string `decoder:"3" json:"-"`
+	IZ907REZ2     string `decoder:"317" json:"-" xml:"-"`
+	IZ907TIPSL    string `decoder:"3" json:"-" xml:"-"`
 }
 
 type _909 struct {
 	IZ909DATUM string `decoder:"8"`
 	IZ909UKGRU string `decoder:"5"`
 	IZ909UKSLG string `decoder:"6"`
-	IZ909REZ3  string `decoder:"978" json:"-"`
-	IZ909TIPSL string `decoder:"3" json:"-"`
+	IZ909REZ3  string `decoder:"978" json:"-" xml:"-"`
+	IZ909TIPSL string `decoder:"3" json:"-" xml:"-"`
 }
 
 type _999 struct {
-	IZ999REZ1  string `decoder:"997" json:"-"`
-	IZ999TIPSL string `decoder:"3" json:"-"`
+	IZ999REZ1  string `decoder:"997" json:"-" xml:"-"`
+	IZ999TIPSL string `decoder:"3" json:"-" xml:"-"`
 }
 
 // Group repesents a group of transactions in a single Statement
@@ -136,7 +137,7 @@ func decode(str interface{}, runes []rune) {
 	}
 }
 
-func parse(handle io.Reader) (bytes []byte, err error) {
+func parse(handle io.Reader, format string) (bytes []byte, err error) {
 	decoder := charmap.Windows1250.NewDecoder()
 	decoderReader := decoder.Reader(handle)
 	linesScanned := 0
@@ -189,6 +190,15 @@ func parse(handle io.Reader) (bytes []byte, err error) {
 		linesScanned++
 	}
 
+	if format == "xml" {
+		bytes, err := xml.Marshal(statement)
+		if err != nil {
+			return nil, err
+		}
+		out := append([]byte(xml.Header), bytes...)
+		return out, nil
+	}
+
 	return json.Marshal(statement)
 }
 
@@ -203,47 +213,59 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
 	}
 
-	bytes, err := parse(file)
+	format := r.URL.Query().Get("format")
+	if len(format) == 0 {
+		format = "json"
+	}
+
+	if format != "xml" && format != "json" {
+		http.Error(w, "Invalid format", http.StatusBadRequest)
+		return
+	}
+
+	bytes, err := parse(file, format)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", fmt.Sprintf("application/%s", format))
 	w.Write(bytes)
 }
 
-func cliMain() {
+func cliMain(format string) {
 	stat, _ := os.Stdin.Stat()
 	hasStdin := (stat.Mode() & os.ModeCharDevice) == 0
-	hasFile := len(os.Args) >= 2
 
-	if hasFile == hasStdin {
-		fmt.Println("Provide either the filename or stdin input")
-		os.Exit(1)
-	}
+	var handle io.Reader = os.Stdin
 
-	var handle io.Reader
-	if hasFile {
-		f, _ := os.Open(os.Args[1])
+	if !hasStdin {
+		file := os.Args[len(os.Args)-1]
+		_, err := os.Stat(file)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(1)
+		}
+		f, _ := os.Open(file)
 		defer f.Close()
 		handle = f
-	} else {
-		handle = os.Stdin
 	}
 
-	json, err := parse(handle)
+	bytes, err := parse(handle, format)
 	if err != nil {
 		fmt.Println(err.Error())
 		os.Exit(1)
 	}
 
-	fmt.Println(string(json))
+	fmt.Println(string(bytes))
 }
 
 func main() {
 	isServer := flag.Bool("s", false, "Start as HTTP server")
+	format := flag.String("f", "json", "Output format ('json' or 'xml')")
 	flag.Parse()
 
 	if *isServer {
@@ -252,6 +274,6 @@ func main() {
 		http.HandleFunc("/", handler)
 		log.Fatal(http.ListenAndServe(addr, nil))
 	} else {
-		cliMain()
+		cliMain(*format)
 	}
 }
